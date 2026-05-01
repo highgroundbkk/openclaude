@@ -13,7 +13,7 @@ import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
+  isGithubNativeAnthropicMode,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -27,6 +27,10 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import {
+  type ProviderOverride,
+  shouldUseFirstPartyAnthropicAuth,
+} from './authRouting.js'
 
 const importRuntimeModule = new Function(
   'specifier',
@@ -102,7 +106,7 @@ export async function getAnthropicClient({
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
-  providerOverride?: { model: string; baseURL: string; apiKey: string }
+  providerOverride?: ProviderOverride
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -134,11 +138,19 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded()
-  logForDebugging('[API:auth] OAuth token check complete')
+  const shouldUseFirstPartyAuth =
+    shouldUseFirstPartyAnthropicAuth(providerOverride)
 
-  if (!isClaudeAISubscriber()) {
+  if (shouldUseFirstPartyAuth) {
+    logForDebugging('[API:auth] OAuth token check starting')
+    await checkAndRefreshOAuthTokenIfNeeded()
+    logForDebugging('[API:auth] OAuth token check complete')
+  }
+
+  const isClaudeAiSubscriber =
+    shouldUseFirstPartyAuth && isClaudeAISubscriber()
+
+  if (shouldUseFirstPartyAuth && !isClaudeAiSubscriber) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
@@ -173,6 +185,25 @@ export async function getAnthropicClient({
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
       providerOverride,
     }) as unknown as Anthropic
+  }
+  // GitHub provider in native Anthropic API mode: send requests in Anthropic
+  // format so cache_control blocks are honoured and prompt caching works.
+  // Requires the GitHub endpoint (OPENAI_BASE_URL) to support Anthropic's
+  // messages API — set CLAUDE_CODE_GITHUB_ANTHROPIC_API=1 to opt in.
+  if (isGithubNativeAnthropicMode(model)) {
+    const githubBaseUrl =
+      process.env.OPENAI_BASE_URL?.replace(/\/$/, '') ??
+      'https://api.githubcopilot.com'
+    const githubToken =
+      process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
+    const nativeArgs: ConstructorParameters<typeof Anthropic>[0] = {
+      ...ARGS,
+      baseURL: githubBaseUrl,
+      authToken: githubToken,
+      // No apiKey — we authenticate via Bearer token (authToken)
+      apiKey: null,
+    }
+    return new Anthropic(nativeArgs)
   }
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
@@ -342,8 +373,8 @@ export async function getAnthropicClient({
 
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
-    authToken: isClaudeAISubscriber()
+    apiKey: isClaudeAiSubscriber ? null : apiKey || getAnthropicApiKey(),
+    authToken: isClaudeAiSubscriber
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
     // Set baseURL from OAuth config when using staging OAuth
