@@ -218,6 +218,7 @@ function buildPresetManifestEntry(
     modelEnvVars: preset.modelEnvVars,
     fallbackBaseUrl: preset.fallbackBaseUrl,
     fallbackModel: preset.fallbackModel,
+    badge: preset.badge,
   }
 }
 
@@ -230,6 +231,16 @@ function compareProviderPresetEntries(
 
   if (leftPreset === rightPreset) {
     return 0
+  }
+
+  // Pin Gitlawb Opengateway first — the free zero-config default
+  // (Xiaomi partnership). Surfaces ahead of anthropic so users without
+  // their own provider credentials hit the working option immediately.
+  if (leftPreset === 'gitlawb-opengateway') {
+    return -1
+  }
+  if (rightPreset === 'gitlawb-opengateway') {
+    return 1
   }
 
   if (leftPreset === 'anthropic') {

@@ -35,9 +35,14 @@ const EXPECTED_PRESETS = [
   'nvidia-nim',
   'minimax',
   'xai',
+  'venice',
+  'xiaomi-mimo',
   'zai',
   'bankr',
   'atomic-chat',
+  'gitlawb-opengateway',
+  'opencode',
+  'opencode-go',
 ] as const satisfies readonly ProviderPreset[]
 
 describe('compatibility mappings', () => {

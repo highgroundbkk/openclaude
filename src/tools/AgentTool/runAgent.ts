@@ -59,7 +59,6 @@ import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { resolveAgentProvider } from '../../services/api/agentRouting.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -74,11 +73,6 @@ import {
   asSystemPrompt,
   type SystemPrompt,
 } from '../../utils/systemPromptType.js'
-import {
-  isPerfettoTracingEnabled,
-  registerAgent as registerPerfettoAgent,
-  unregisterAgent as unregisterPerfettoAgent,
-} from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
@@ -288,7 +282,7 @@ export async function* runAgent({
     abortController?: AbortController
     agentId?: AgentId
   }
-  model?: ModelAlias
+  model?: string
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -365,12 +359,7 @@ export async function* runAgent({
     setAgentTranscriptSubdir(agentId, transcriptSubdir)
   }
 
-  // Register agent in Perfetto trace for hierarchy visualization
-  if (isPerfettoTracingEnabled()) {
-    const parentId = toolUseContext.agentId ?? getSessionId()
-    registerPerfettoAgent(agentId, agentDefinition.agentType, parentId)
-  }
-
+  
   // Log API calls path for subagents (internal-only)
   if (process.env.USER_TYPE === 'ant') {
     logForDebugging(
@@ -842,8 +831,6 @@ export async function* runAgent({
     agentToolUseContext.readFileState.clear()
     // Release the cloned fork context messages
     initialMessages.length = 0
-    // Release perfetto agent registry entry
-    unregisterPerfettoAgent(agentId)
     // Release transcript subdir mapping
     clearAgentTranscriptSubdir(agentId)
     // Release this agent's todos entry. Without this, every subagent that

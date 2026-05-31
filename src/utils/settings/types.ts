@@ -361,14 +361,14 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe(
           'Customize attribution text for commits and PRs. ' +
-            'Each field defaults to the standard Claude Code attribution if not set.',
+            'Unspecified fields are off by default; set a non-empty string to opt in.',
         ),
       includeCoAuthoredBy: z
         .boolean()
         .optional()
         .describe(
           'Deprecated: Use attribution instead. ' +
-            "Whether to include Claude's co-authored by attribution in commits and PRs (defaults to true)",
+            "Whether to include Claude's co-authored by attribution in commits and PRs (defaults to false)",
         ),
       includeGitInstructions: z
         .boolean()
@@ -678,6 +678,20 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether to show tips in the spinner'),
+      sponsoredTipsEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether to show sponsored partner tips alongside regular tips (default: true). Disabling does not affect regular tips.',
+        ),
+      sponsoredTipsFrequency: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Show at most 1 sponsored tip per N spinner picks. Default 10. Set 0 to disable sponsored tips.',
+        ),
       spinnerVerbs: z
         .object({
           mode: z.enum(['append', 'replace']),
