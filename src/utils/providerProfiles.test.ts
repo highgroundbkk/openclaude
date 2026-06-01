@@ -1160,7 +1160,7 @@ describe('getProviderPresetDefaults', () => {
     expect(defaults.requiresApiKey).toBe(true)
   })
 
-  test('minimax preset defaults to MiniMax M2.7', async () => {
+  test('minimax preset defaults to MiniMax M3', async () => {
     const { getProviderPresetDefaults } = await importFreshProviderProfileModules()
 
     const defaults = getProviderPresetDefaults('minimax')
@@ -1168,7 +1168,7 @@ describe('getProviderPresetDefaults', () => {
     expect(defaults.provider).toBe('minimax')
     expect(defaults.name).toBe('MiniMax')
     expect(defaults.baseUrl).toBe('https://api.minimax.io/anthropic')
-    expect(defaults.model).toBe('MiniMax-M2.7')
+    expect(defaults.model).toBe('MiniMax-M3')
     expect(defaults.requiresApiKey).toBe(true)
   })
 
@@ -2136,4 +2136,11 @@ describe('setActiveProviderProfile model cache', () => {
       },
     ])
   })
+})
+
+test('DEFAULT_MISTRAL_MODEL matches the mistral gateway defaultModel', async () => {
+  const { DEFAULT_MISTRAL_MODEL } = await import('./providerProfile.js')
+  const { default: mistralGateway } = await import('../integrations/gateways/mistral.js')
+  expect(mistralGateway.defaultModel).toBeDefined()
+  expect(DEFAULT_MISTRAL_MODEL).toBe(mistralGateway.defaultModel!)
 })

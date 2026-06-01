@@ -34,7 +34,7 @@ const featureFlags: Record<string, boolean> = {
   WEB_BROWSER_TOOL: false,        // Built-in browser automation (source not mirrored)
   CHICAGO_MCP: false,             // Computer-use MCP (native Swift modules stubbed)
   COWORKER_TYPE_TELEMETRY: false, // Telemetry for agent/coworker type classification
-  MCP_SKILLS: false,              // Dynamic MCP skill discovery (src/skills/mcpSkills.ts not mirrored; enabling this causes "fetchMcpSkillsForClient is not a function" when MCP servers with resources connect — see #856)
+  MCP_SKILLS: true,               // Dynamic MCP skill discovery via skill:// resources
 
   // ── Enabled: upstream defaults ──────────────────────────────────────
   COORDINATOR_MODE: true,             // Multi-agent coordinator with worker delegation
@@ -850,10 +850,10 @@ export const Fragment = null;
           'instances': 'new Map()',
           'selectableUserMessagesFilter': '() => true',
           'messagesAfterAreOnlySynthetic': '() => false',
-          'SandboxManager': 'class { static isSupportedPlatform = () => false; static create = noop; static Version = \'\'; }',
+          'SandboxManager': 'class { static isSupportedPlatform = () => false; static create = noop; static Version = \'\'; static annotateStderrWithSandboxFailures = (_command, stderr) => stderr; }',
           'SandboxRuntimeConfigSchema': '{ parse: noop }',
           'SandboxViolationStore': 'null',
-          'BaseSandboxManager': 'class { static isSupportedPlatform = () => false; }',
+          'BaseSandboxManager': 'class { static isSupportedPlatform = () => false; static annotateStderrWithSandboxFailures = (_command, stderr) => stderr; }',
           'ExportResultCode': '{ SUCCESS: 0, FAILED: 1 }',
           'linkifyUrlsInText': '(s) => s',
         }
