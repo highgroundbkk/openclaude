@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle';
 import {
   applyProfileEnvToProcessEnv,
   buildStartupEnvFromProfile,
+  isDefaultStartupProviderEnv,
 } from '../utils/providerProfile.js'
 import {
   getProviderValidationError,
@@ -91,7 +92,9 @@ async function main(): Promise<void> {
   // validation, and the startup banner all see the intended provider/model.
   if (args.includes('--provider')) {
     const { applyProviderFlagFromArgs } = await import('../utils/providerFlag.js');
-    const result = applyProviderFlagFromArgs(args);
+    const result = applyProviderFlagFromArgs(args, {
+      rememberForSettingsEnv: true,
+    });
     if (result?.error) {
       // biome-ignore lint/suspicious/noConsole:: intentional error output
       console.error(`Error: ${result.error}`);
@@ -111,18 +114,12 @@ async function main(): Promise<void> {
     applySafeConfigEnvironmentVariables()
   }
 
-  const hasConfiguredProviderProfile = await (async () => {
-    const { getActiveProviderProfile } = await import('../utils/providerProfiles.js')
-    return getActiveProviderProfile() !== undefined
-  })()
-
   const startupEnv = await buildStartupEnvFromProfile({
     processEnv: process.env,
-    hasConfiguredProviderProfile,
   })
   if (startupEnv !== process.env) {
     const startupProfileError = await getProviderValidationError(startupEnv)
-    if (startupProfileError) {
+    if (startupProfileError && !isDefaultStartupProviderEnv(startupEnv)) {
       console.error(
         `Warning: ignoring saved provider profile. ${startupProfileError}`,
       )

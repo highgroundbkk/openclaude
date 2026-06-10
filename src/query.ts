@@ -11,6 +11,7 @@ import {
   MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
+import { consumeCompactionRequest } from './utils/memoryPressure.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const reactiveCompact = feature('REACTIVE_COMPACT')
@@ -40,6 +41,7 @@ import type {
 } from './types/message.js'
 import { logError } from './utils/log.js'
 import {
+  getProviderMaxTokensCapFromMessage,
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
 } from './services/api/errors.js'
@@ -197,6 +199,15 @@ function isWithheldMaxOutputTokens(
   return msg?.type === 'assistant' && msg.apiError === 'max_output_tokens'
 }
 
+function isWithheldProviderMaxTokensCap(
+  msg: Message | StreamEvent | undefined,
+): msg is AssistantMessage {
+  return (
+    msg?.type === 'assistant' &&
+    getProviderMaxTokensCapFromMessage(msg) !== undefined
+  )
+}
+
 export type QueryParams = {
   messages: Message[]
   systemPrompt: SystemPrompt
@@ -231,6 +242,7 @@ type State = {
   maxOutputTokensRecoveryCount: number
   hasAttemptedReactiveCompact: boolean
   maxOutputTokensOverride: number | undefined
+  providerMaxOutputTokensCap: number | undefined
   pendingToolUseSummary: Promise<ToolUseSummaryMessage | null> | undefined
   stopHookActive: boolean | undefined
   // One-shot guard for the provider-fallback recovery branch (issue #768).
@@ -310,6 +322,7 @@ async function* queryLoop(
     messages: params.messages,
     toolUseContext: params.toolUseContext,
     maxOutputTokensOverride: params.maxOutputTokensOverride,
+    providerMaxOutputTokensCap: undefined,
     autoCompactTracking: params.autoCompactTracking,
     stopHookActive: undefined,
     maxOutputTokensRecoveryCount: 0,
@@ -366,10 +379,17 @@ async function* queryLoop(
       hasAttemptedReactiveCompact,
       hasAttemptedProviderFallback,
       maxOutputTokensOverride,
+      providerMaxOutputTokensCap,
       pendingToolUseSummary,
       stopHookActive,
       turnCount,
     } = state
+    const effectiveMaxOutputTokensOverride =
+      maxOutputTokensOverride === undefined
+        ? providerMaxOutputTokensCap
+        : providerMaxOutputTokensCap === undefined
+          ? maxOutputTokensOverride
+          : Math.min(maxOutputTokensOverride, providerMaxOutputTokensCap)
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the
@@ -535,6 +555,32 @@ async function* queryLoop(
     const fullSystemPrompt = asSystemPrompt(
       appendSystemContext(asSystemPrompt(promptWithArc), systemContext),
     )
+
+    // Force compaction if memory pressure detected or message count exceeded.
+    // Sets forceReason on tracking so autoCompactIfNeeded bypasses the
+    // token-threshold check. Consumed once (one-shot) inside autocompact.
+    // Skip for compact/session_memory sources — those run inside an existing
+    // compaction and forcing would deadlock via recursive autocompaction.
+    const canForceCompact =
+      querySource !== 'compact' && querySource !== 'session_memory'
+    if (canForceCompact) {
+      const MAX_ACTIVE_MESSAGES = Number.parseInt(
+        process.env.OPENCLAUDE_MAX_ACTIVE_MESSAGES ?? '200',
+        10,
+      )
+      if (messagesForQuery.length > MAX_ACTIVE_MESSAGES) {
+        tracking = {
+          ...(tracking ?? { compacted: false, turnId: '', turnCounter: 0 }),
+          forceReason: 'message-count',
+        }
+      }
+      if (consumeCompactionRequest()) {
+        tracking = {
+          ...(tracking ?? { compacted: false, turnId: '', turnCounter: 0 }),
+          forceReason: tracking?.forceReason ?? 'memory-pressure',
+        }
+      }
+    }
 
     queryCheckpoint('query_autocompact_start')
     const {
@@ -832,7 +878,7 @@ async function* queryLoop(
                 toolUseContext.options.agentDefinitions.allowedAgentTypes,
               hasAppendSystemPrompt:
                 !!toolUseContext.options.appendSystemPrompt,
-              maxOutputTokensOverride,
+              maxOutputTokensOverride: effectiveMaxOutputTokensOverride,
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
               hasPendingMcpServers: appState.mcp.clients.some(
@@ -967,6 +1013,9 @@ async function* queryLoop(
               withheld = true
             }
             if (isWithheldMaxOutputTokens(message)) {
+              withheld = true
+            }
+            if (isWithheldProviderMaxTokensCap(message)) {
               withheld = true
             }
             // Withhold rate-limit errors when a providerFallbackChain entry is
@@ -1269,6 +1318,7 @@ async function* queryLoop(
               hasAttemptedReactiveCompact,
               hasAttemptedProviderFallback,
               maxOutputTokensOverride: undefined,
+              providerMaxOutputTokensCap,
               pendingToolUseSummary: undefined,
               stopHookActive: undefined,
               turnCount,
@@ -1325,6 +1375,7 @@ async function* queryLoop(
             hasAttemptedReactiveCompact: true,
             hasAttemptedProviderFallback,
             maxOutputTokensOverride: undefined,
+            providerMaxOutputTokensCap,
             pendingToolUseSummary: undefined,
             stopHookActive: undefined,
             turnCount,
@@ -1352,6 +1403,56 @@ async function* queryLoop(
         return { reason: 'prompt_too_long' }
       }
 
+      if (isWithheldProviderMaxTokensCap(lastMessage)) {
+        const providerMaxTokensCap =
+          getProviderMaxTokensCapFromMessage(lastMessage)
+        const shouldRetryWithProviderCap =
+          providerMaxTokensCap !== undefined &&
+          state.transition?.reason !== 'provider_max_tokens_retry' &&
+          (effectiveMaxOutputTokensOverride === undefined ||
+            providerMaxTokensCap < effectiveMaxOutputTokensOverride)
+
+        if (shouldRetryWithProviderCap) {
+          const nextProviderMaxOutputTokensCap =
+            providerMaxOutputTokensCap === undefined
+              ? providerMaxTokensCap
+              : Math.min(providerMaxOutputTokensCap, providerMaxTokensCap)
+          logEvent('tengu_provider_max_tokens_cap_retry', {
+            cap: providerMaxTokensCap,
+            ...(effectiveMaxOutputTokensOverride !== undefined && {
+              previousMaxOutputTokensOverride:
+                effectiveMaxOutputTokensOverride,
+            }),
+          })
+          yield createSystemMessage(
+            `Provider maximum output tokens limit is ${providerMaxTokensCap.toLocaleString('en-US')}; retrying with that cap.`,
+            'warning',
+          )
+          const next: State = {
+            messages: messagesForQuery,
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact,
+            hasAttemptedProviderFallback,
+            maxOutputTokensOverride,
+            providerMaxOutputTokensCap: nextProviderMaxOutputTokensCap,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount,
+            continuationNudgeCount: state.continuationNudgeCount,
+            transition: {
+              reason: 'provider_max_tokens_retry',
+              cap: providerMaxTokensCap,
+            },
+          }
+          state = next
+          continue
+        }
+
+        yield lastMessage
+      }
+
       // Check for max_output_tokens and inject recovery message. The error
       // was withheld from the stream above; only surface it if recovery
       // exhausts.
@@ -1368,7 +1469,7 @@ async function* queryLoop(
         )
         if (
           capEnabled &&
-          maxOutputTokensOverride === undefined &&
+          effectiveMaxOutputTokensOverride === undefined &&
           !process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
         ) {
           logEvent('tengu_max_tokens_escalate', {
@@ -1382,6 +1483,7 @@ async function* queryLoop(
             hasAttemptedReactiveCompact,
             hasAttemptedProviderFallback,
             maxOutputTokensOverride: ESCALATED_MAX_TOKENS,
+            providerMaxOutputTokensCap,
             pendingToolUseSummary: undefined,
             stopHookActive: undefined,
             turnCount,
@@ -1412,6 +1514,7 @@ async function* queryLoop(
             hasAttemptedReactiveCompact,
             hasAttemptedProviderFallback,
             maxOutputTokensOverride: undefined,
+            providerMaxOutputTokensCap,
             pendingToolUseSummary: undefined,
             stopHookActive: undefined,
             turnCount,
@@ -1490,6 +1593,7 @@ async function* queryLoop(
               hasAttemptedReactiveCompact,
               hasAttemptedProviderFallback: true,
               maxOutputTokensOverride: undefined,
+              providerMaxOutputTokensCap: undefined,
               pendingToolUseSummary: undefined,
               stopHookActive: undefined,
               turnCount,
@@ -1526,6 +1630,8 @@ async function* queryLoop(
         toolUseContext,
         querySource,
         stopHookActive,
+        deps.goalEvaluationDeps,
+        deps.stopHookExecutionDeps,
       )
 
       if (stopHookResult.preventContinuation) {
@@ -1553,8 +1659,9 @@ async function* queryLoop(
           // active, so preserve rather than re-fall-back.
           hasAttemptedProviderFallback,
           maxOutputTokensOverride: undefined,
+          providerMaxOutputTokensCap,
           pendingToolUseSummary: undefined,
-          stopHookActive: true,
+          stopHookActive: stopHookResult.stopHookActive,
           turnCount,
           continuationNudgeCount: state.continuationNudgeCount,
           transition: { reason: 'stop_hook_blocking' },
@@ -1591,6 +1698,7 @@ async function* queryLoop(
             hasAttemptedReactiveCompact: false,
             hasAttemptedProviderFallback: false,
             maxOutputTokensOverride: undefined,
+            providerMaxOutputTokensCap,
             pendingToolUseSummary: undefined,
             stopHookActive: undefined,
             turnCount,
@@ -1654,6 +1762,7 @@ async function* queryLoop(
               hasAttemptedReactiveCompact: false,
               hasAttemptedProviderFallback: false,
               maxOutputTokensOverride: undefined,
+              providerMaxOutputTokensCap,
               pendingToolUseSummary: undefined,
               stopHookActive: undefined,
               turnCount,
@@ -1728,7 +1837,9 @@ async function* queryLoop(
       const { addMessageToTurn, addToolCallToTurn } = await import(
         './utils/multiTurnContext.js'
       )
-      addMessageToTurn(assistantMessage)
+      for (const assistantMessage of assistantMessages) {
+        addMessageToTurn(assistantMessage)
+      }
       for (const toolUse of toolUseBlocks) {
         addToolCallToTurn({
           id: toolUse.id,
@@ -1747,7 +1858,7 @@ async function* queryLoop(
       const { updateArcPhase, finalizeArcTurn } = await import(
         './utils/conversationArc.js'
       )
-      await updateArcPhase([assistantMessage])
+      await updateArcPhase(assistantMessages)
       await finalizeArcTurn()
     }
 
@@ -2101,6 +2212,7 @@ async function* queryLoop(
       continuationNudgeCount: 0,
       pendingToolUseSummary: nextPendingToolUseSummary,
       maxOutputTokensOverride: undefined,
+      providerMaxOutputTokensCap,
       stopHookActive,
       transition: { reason: 'next_turn' },
     }

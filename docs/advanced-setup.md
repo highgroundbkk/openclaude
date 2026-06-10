@@ -194,7 +194,7 @@ export OPENAI_MODEL=gpt-5.4
 openclaude
 ```
 
-OpenCode Zen is a pay-as-you-go AI gateway with 41 models (GPT, Claude, Gemini,
+OpenCode Zen is a pay-as-you-go AI gateway with 43 models (GPT, Claude, Gemini,
 Qwen, MiniMax, GLM, Kimi, Grok, Big Pickle, DeepSeek, Nemotron). Uses the same
 `OPENCODE_API_KEY` as OpenCode Go. Get your key from https://opencode.ai.
 
@@ -209,7 +209,7 @@ export OPENAI_MODEL=glm-5.1
 openclaude
 ```
 
-OpenCode Go is a $10/mo subscription for 12 open models (GLM, Kimi, DeepSeek,
+OpenCode Go is a $10/mo subscription for 13 open models (GLM, Kimi, DeepSeek,
 MiMo, MiniMax, Qwen). Uses the same `OPENCODE_API_KEY` as OpenCode Zen.
 
 ### Gitlawb Opengateway
@@ -217,12 +217,13 @@ MiMo, MiniMax, Qwen). Uses the same `OPENCODE_API_KEY` as OpenCode Zen.
 ```bash
 export CLAUDE_CODE_USE_OPENAI=1
 export OPENAI_BASE_URL=https://opengateway.gitlawb.com/v1
-export OPENAI_API_KEY=anything
+export OPENGATEWAY_API_KEY=ogw_live_...
 export OPENAI_MODEL=mimo-v2.5-pro
 ```
 
-The Opengateway route is a smart gateway. Keep the base URL at `/v1` and switch
-models with `/model` or `OPENAI_MODEL`. Current partner models include:
+The Opengateway route is the fresh-install startup default and requires an API
+key from https://gitlawb.com/opengateway/keys. Keep the base URL at `/v1` and
+switch models with `/model` or `OPENAI_MODEL`. Current partner models include:
 
 - `mimo-v2.5-pro`
 - `google/gemini-3.1-flash-lite-preview`
@@ -254,6 +255,30 @@ export OPENAI_API_KEY=your-azure-key
 export OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/deployments/your-deployment/v1
 export OPENAI_MODEL=gpt-4o
 ```
+
+### Microsoft Foundry / Azure OpenAI (resource URL + deployment)
+
+When your endpoint is the **resource base URL** (not the full `.../deployments/.../v1` path), set `OPENAI_MODEL` to the **deployment name** and `AZURE_OPENAI_API_VERSION` to your API version. The OpenAI shim builds:
+
+`{base}/openai/deployments/{OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}`
+
+and sends the key in the `api-key` header for Azure hosts.
+
+```bash
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY=your-azure-key
+export OPENAI_BASE_URL=https://your-resource.openai.azure.com
+export OPENAI_MODEL=your-deployment-name
+export AZURE_OPENAI_API_VERSION=2024-12-01-preview
+```
+
+If your hostname is not detected as Azure (for example some inference endpoints), force Azure URL and header behavior:
+
+```bash
+export OPENAI_AZURE_STYLE=1
+```
+
+The **OpenClaude VS Code extension** can store the key in Secret Storage and set these variables for you when you launch from the Control Center. See `vscode-extension/openclaude-vscode/README.md`.
 
 ## Environment Variables
 
@@ -376,6 +401,27 @@ bun run dev:atomic-chat
 `profile:recommend` ranks installed Ollama models for `latency`, `balanced`, or `coding`, and `profile:auto` can persist the recommendation directly.
 
 If no profile exists yet, `dev:profile` uses the same goal-aware defaults when picking the initial model.
+
+### Provider Profile Model Picker Mode
+
+When a saved provider profile is active, `/model` can either show the provider's
+catalog/discovered models or only the models explicitly listed in the profile.
+Configure this in `~/.openclaude.json`:
+
+```json
+{
+  "providerProfileModelPickerMode": "auto"
+}
+```
+
+Supported values:
+
+- `auto` (default): single-model profiles show the provider catalog; multi-model
+  profiles show the explicit profile list; native vendor routes keep their full
+  provider catalog.
+- `provider`: show the provider catalog/discovery list first and append
+  profile-only custom model IDs.
+- `profile`: show only explicitly configured profile models.
 
 Use `--provider ollama` when you want a local-only path. Auto mode falls back to OpenAI when no viable local chat model is installed.
 
